@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>구조화된 면접 질문 생성기 v7 (Final Parser Fix)</title>
+    <title>구조화된 면접 질문 생성기 v8 (Dedupe Fix)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -205,9 +205,9 @@
         function parseLevelMatrix(text) {
             const lines = text.trim().split('\n');
             const matrix = {
-                skLevels: [],
-                rrLevels: [],
-                mapping: {}
+                skLevels: [], // { id: 'S&K 1', name: '[...]' }
+                rrLevels: [], // { id: 'R&R 1', name: '[...]' }
+                mapping: {}   // { 'S&K 1': { 'R&R 1': 'L3', ... } }
             };
 
             if (lines.length < 3) return matrix;
@@ -216,16 +216,21 @@
             lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
 
             // R&R 헤더 (ID: R&R 1, R&R 2, ...)
-            // *** [수정] *** 견고한 파서 사용
             const rrHeaderIds = parseCsvLine(lines[0]); 
             // R&R 이름 ([Ownership]..., [Collaboration]..., ...)
-            // *** [수정] *** 견고한 파서 사용
             const rrHeaderNames = parseCsvLine(lines[1]); 
             
+            // *** [수정 v8] ***: 중복 R&R ID를 걸러내기 위한 Set
+            const rrIdSet = new Set();
+            
             for (let i = 2; i < rrHeaderIds.length; i++) {
-                if (rrHeaderIds[i]) {
+                const rrId = rrHeaderIds[i];
+                // *** [수정 v8] ***: ID가 비어있지 않고, Set에 없는 경우에만 추가
+                // 이렇게 하면 CSV 헤더에 중복 ID나 오타(R&K 2)가 있어도 첫 번째 값만 유니크하게 들어감
+                if (rrId && !rrIdSet.has(rrId)) {
+                    rrIdSet.add(rrId); // Set에 추가
                     matrix.rrLevels.push({
-                        id: rrHeaderIds[i],
+                        id: rrId,
                         name: rrHeaderNames[i] || 'N/A'
                     });
                 }
@@ -235,10 +240,14 @@
             for (let i = 2; i < lines.length; i++) {
                 if (!lines[i].trim()) continue; // 빈 줄 스킵
                 
-                // *** [수정] *** 견고한 파서 사용
                 const cols = parseCsvLine(lines[i]); 
                 const skLevelId = cols[0];
-                if (!skLevelId) continue;
+                
+                // *** [수정 v8] ***: "S&K " (공백 포함)으로 시작하는 행만 S&K 레벨로 인정
+                // 이렇게 하면 파일 하단의 'S&K1R&R2' 같은 중복/목록 데이터를 무시함
+                if (!skLevelId || !skLevelId.startsWith('S&K ')) {
+                    continue; 
+                }
                 
                 const skLevelName = cols[1]; // 이미 parseCsvLine에서 처리됨
                 matrix.skLevels.push({ id: skLevelId, name: skLevelName });
@@ -320,16 +329,19 @@
             errorEl.classList.add('hidden'); // 에러 메시지 초기화
 
             try {
-                // *** [수정] ***
-                // 파일 경로는 v5와 동일하게, 사용자가 변경한 파일명 사용
+                // 파일 경로는 사용자가 변경한 파일명 사용
                 const [matrixText, indicatorText] = await Promise.all([
                     fetchAndParseCSV('level_matrix.csv'),
                     fetchAndParseCSV('indicator.csv')
                 ]);
-                // *** [수정 끝] ***
 
                 // Level Matrix 파싱 및 드롭다운 채우기
                 db.levelMatrix = parseLevelMatrix(matrixText);
+                
+                // *** [수정 v8] ***: 드롭다운 초기화 (기존 <option> 제거)
+                skSelect.innerHTML = '<option value="">S&K 레벨 선택...</option>'; 
+                rrSelect.innerHTML = '<option value="">R&R 레벨 선택...</option>';
+
                 db.levelMatrix.skLevels.forEach(sk => {
                     skSelect.innerHTML += `<option value="${sk.id}">${sk.id} (${sk.name})</option>`;
                 });
@@ -342,11 +354,12 @@
                 db.indicators = indicators;
                 db.jobGroups = jobGroups;
 
+                // *** [수정 v8] ***: 직무 드롭다운도 초기화
+                jobSelect.innerHTML = '<option value="">직무를 선택하세요...</option>';
                 db.jobGroups.forEach(job => {
                     jobSelect.innerHTML += `<option value="${job}">${job}</option>`;
                 });
 
-                // *** [추가] ***
                 // 파싱은 성공했으나 데이터가 비어있는 경우 에러 처리
                 if (db.jobGroups.length === 0 || db.levelMatrix.skLevels.length === 0) {
                    throw new Error("CSV 파일 파싱에 성공했으나, 데이터를 읽어오지 못했습니다. CSV 파일 내용을 확인해주세요.");
@@ -508,7 +521,7 @@
             }).join('');
 
             let rrRubricHtml = rrIndicators.map(ind => {
-                const rubric = generateRubGCEntry(ind.name, ind.desc);
+                const rubric = generateRubricEntry(ind.name, ind.desc);
                 return `
                     <tr>
                         <td><strong>${ind.name}</strong></td>
@@ -574,17 +587,6 @@
                     <p><strong>I (Initial):</strong> ${ratingDefinitions.I}</p>
                 </div>
             `;
-        }
-        
-        // 헬퍼 내 오타 수정
-        function generateRubricEntry(indicatorName, indicatorDesc) {
-            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
-            // H/M/I 정의를 기반으로 템플릿 생성
-            return {
-                H: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'높은 수준으로 지속 유지'</strong>하며, <strong>'조직/동료에게 긍정적인 영향'</strong>을 미친 명확한 성공 사례를 구체적으로 제시함.`,
-                M: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'대부분의 업무에서 주도적으로 발휘'</strong>한 경험을 구체적으로 제시함.`,
-                I: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 발휘한 경험이 없거나, <strong>'상사의 지시에 의해서만 수동적으로 수행'</strong>한 경험만 제시함.`
-            };
         }
 
         // 페이지 로드 시 데이터 초기화

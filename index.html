@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>구조화된 면접 질문 생성기 v8 (Dedupe Fix)</title>
+    <title>구조화된 면접 질문 생성기 v9 (Guard Fix)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -220,13 +220,12 @@
             // R&R 이름 ([Ownership]..., [Collaboration]..., ...)
             const rrHeaderNames = parseCsvLine(lines[1]); 
             
-            // *** [수정 v8] ***: 중복 R&R ID를 걸러내기 위한 Set
+            //  중복 R&R ID를 걸러내기 위한 Set
             const rrIdSet = new Set();
             
             for (let i = 2; i < rrHeaderIds.length; i++) {
                 const rrId = rrHeaderIds[i];
-                // *** [수정 v8] ***: ID가 비어있지 않고, Set에 없는 경우에만 추가
-                // 이렇게 하면 CSV 헤더에 중복 ID나 오타(R&K 2)가 있어도 첫 번째 값만 유니크하게 들어감
+                // ID가 비어있지 않고, Set에 없는 경우에만 추가
                 if (rrId && !rrIdSet.has(rrId)) {
                     rrIdSet.add(rrId); // Set에 추가
                     matrix.rrLevels.push({
@@ -243,8 +242,7 @@
                 const cols = parseCsvLine(lines[i]); 
                 const skLevelId = cols[0];
                 
-                // *** [수정 v8] ***: "S&K " (공백 포함)으로 시작하는 행만 S&K 레벨로 인정
-                // 이렇게 하면 파일 하단의 'S&K1R&R2' 같은 중복/목록 데이터를 무시함
+                // "S&K " (공백 포함)으로 시작하는 행만 S&K 레벨로 인정
                 if (!skLevelId || !skLevelId.startsWith('S&K ')) {
                     continue; 
                 }
@@ -338,7 +336,7 @@
                 // Level Matrix 파싱 및 드롭다운 채우기
                 db.levelMatrix = parseLevelMatrix(matrixText);
                 
-                // *** [수정 v8] ***: 드롭다운 초기화 (기존 <option> 제거)
+                // 드롭다운 초기화 (기존 <option> 제거)
                 skSelect.innerHTML = '<option value="">S&K 레벨 선택...</option>'; 
                 rrSelect.innerHTML = '<option value="">R&R 레벨 선택...</option>';
 
@@ -354,7 +352,7 @@
                 db.indicators = indicators;
                 db.jobGroups = jobGroups;
 
-                // *** [수정 v8] ***: 직무 드롭다운도 초기화
+                // 직무 드롭다운도 초기화
                 jobSelect.innerHTML = '<option value="">직무를 선택하세요...</option>';
                 db.jobGroups.forEach(job => {
                     jobSelect.innerHTML += `<option value="${job}">${job}</option>`;
@@ -426,6 +424,8 @@
                     const skIndicators = getIndicators(jobGroup, skLevel);
                     const rrIndicators = getIndicators(jobGroup, rrLevel);
 
+                    // *** [수정 v9] ***:
+                    // 이제 skIndicators.length가 0이면, "데이터 없음" 오류를 정상적으로 발생시킴
                     if (skIndicators.length < 1) {
                         throw new Error(`Indicator 파일에서 [${jobGroup}] 직무의 [${skLevel}] 세부지표를 찾을 수 없습니다.`);
                     }
@@ -453,18 +453,21 @@
         // 헬퍼: Indicator 5개 (또는 있는 만큼) 가져오기
         function getIndicators(jobGroup, grade) {
             const indicators = [];
-            // indicator.xlsx 파일의 Concatenate 키 형식을 따름 (예: Software EngineeringS&K3세부지표1)
-            // '세부지표 키워드' 컬럼에서 번호를 파싱 (예: "1. 프로세스 고도화")
             for (const key in db.indicators) {
                 const data = db.indicators[key];
                 if (data.job === jobGroup && data.grade === grade) {
-                    const match = data.name.match(/^(\d+)\./); // "1.", "2." ...
-                    const num = match ? parseInt(match[1], 10) : 99; // 번호가 없으면 뒤로
-                    indicators.push({
-                        num: num,
-                        name: data.name,
-                        desc: data.desc
-                    });
+                    
+                    // *** [수정 v9] ***
+                    // name과 desc가 유효한 문자열일 때만 추가 (undefined 방지)
+                    if (typeof data.name === 'string' && typeof data.desc === 'string') {
+                        const match = data.name.match(/^(\d+)\./); // "1.", "2." ...
+                        const num = match ? parseInt(match[1], 10) : 99; // 번호가 없으면 뒤로
+                        indicators.push({
+                            num: num,
+                            name: data.name,
+                            desc: data.desc
+                        });
+                    }
                 }
             }
             return indicators.sort((a, b) => a.num - b.num); // 번호순으로 정렬
@@ -473,7 +476,8 @@
         // 헬퍼: 행동 기반 질문 생성 (템플릿)
         function generateBehavioralQuestions(indicatorName) {
             // "1. " 같은 앞번호 제거
-            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
+            // *** [수정 v9] ***: (indicatorName || '')으로 undefined 방어
+            const cleanName = (indicatorName || '').replace(/^\d+\.\s*/, '');
             return [
                 `<strong>[${cleanName}]</strong> 역량을 발휘했던 가장 대표적인 경험에 대해 말씀해 주시겠어요? (당시 상황(Situation), 본인의 과제(Task), 구체적인 행동(Action), 그리고 그 결과(Result)를 포함하여 STAR 방식으로 설명해 주세요.)`,
                 `과거에 <strong>[${cleanName}]</strong> 역량이 특히 중요하다고 판단했던 프로젝트나 업무가 있었다면 자세히 설명해 주시겠어요? (왜 그렇게 생각했는지, 본인은 어떤 기여를 했는지, 결과는 어땠는지 말씀해 주세요.)`
@@ -482,12 +486,14 @@
 
         // 헬퍼: 평가 루브릭 기준 생성 (템플릿)
         function generateRubricEntry(indicatorName, indicatorDesc) {
-            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
+            // *** [수정 v9] ***: (indicatorName || '')으로 undefined 방어
+            const cleanName = (indicatorName || '').replace(/^\d+\.\s*/, '');
+            const cleanDesc = indicatorDesc || '(설명 없음)';
             // H/M/I 정의를 기반으로 템플릿 생성
             return {
-                H: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'높은 수준으로 지속 유지'</strong>하며, <strong>'조직/동료에게 긍정적인 영향'</strong>을 미친 명확한 성공 사례를 구체적으로 제시함.`,
-                M: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'대부분의 업무에서 주도적으로 발휘'</strong>한 경험을 구체적으로 제시함.`,
-                I: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 발휘한 경험이 없거나, <strong>'상사의 지시에 의해서만 수동적으로 수행'</strong>한 경험만 제시함.`
+                H: `<strong>'${cleanName}'</strong> 역량(${cleanDesc})을 <strong>'높은 수준으로 지속 유지'</strong>하며, <strong>'조직/동료에게 긍정적인 영향'</strong>을 미친 명확한 성공 사례를 구체적으로 제시함.`,
+                M: `<strong>'${cleanName}'</strong> 역량(${cleanDesc})을 <strong>'대부분의 업무에서 주도적으로 발휘'</strong>한 경험을 구체적으로 제시함.`,
+                I: `<strong>'${cleanName}'</strong> 역량(${cleanDesc})을 발휘한 경험이 없거나, <strong>'상사의 지시에 의해서만 수동적으로 수행'</strong>한 경험만 제시함.`
             };
         }
 

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NSUSLAB 구조화된 면접 질문 생성기 v5 (Error Fix)</title>
+    <title>구조화된 면접 질문 생성기 v7 (Final Parser Fix)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -175,14 +175,30 @@
                 return await response.text();
             } catch (e) {
                 console.error(e);
-                // *** [수정] *** // 여기서 에러를 다시 던져서 loadData의 catch 블록이 잡도록 함
-                throw new Error(`데이터 파일(${url}) 로딩에 실패했습니다. 파일 이름과 경로를 확인해주세요.`);
+                // 여기서 에러를 다시 던져서 loadData의 catch 블록이 잡도록 함
+                throw new Error(`데이터 파일(${url}) 로딩에 실패했습니다. 깃허브 저장소에 파일이 정확히 있는지 확인해주세요.`);
             }
         }
         
-        // 텍스트 정제 헬퍼
-        function cleanCsvText(text) {
-            return text.trim().replace(/"/g, '').replace(/\\n/g, ' ');
+        // 견고한 CSV 라인 파서 (따옴표 안의 쉼표, 줄바꿈 처리)
+        function parseCsvLine(line) {
+            const regex = /(?:"([^"]*(?:""[^"]*)*)"|([^",]+))(?=,|$)/g;
+            const matches = [];
+            let match;
+            
+            while (match = regex.exec(line)) {
+                let value = match[1] || match[2]; // match[1]은 따옴표 안의 값, match[2]는 따옴표 없는 값
+                if (value === undefined || value === null) {
+                    value = "";
+                }
+                // 따옴표로 묶인 값의 경우, 이스케이프된 따옴표("")를 일반 따옴표(")로 복원
+                // 줄바꿈(\n 또는 \r\n)을 공백으로 치환
+                if (match[1] !== undefined) {
+                    value = value.replace(/""/g, '"').replace(/(\r\n|\n|\r)/gm, " ");
+                }
+                matches.push(value.trim());
+            }
+            return matches;
         }
 
         // Level Matrix.csv 파서 (파일 구조에 맞춤)
@@ -200,9 +216,11 @@
             lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
 
             // R&R 헤더 (ID: R&R 1, R&R 2, ...)
-            const rrHeaderIds = lines[0].split(',').map(h => h.trim());
+            // *** [수정] *** 견고한 파서 사용
+            const rrHeaderIds = parseCsvLine(lines[0]); 
             // R&R 이름 ([Ownership]..., [Collaboration]..., ...)
-            const rrHeaderNames = lines[1].split(',').map(cleanCsvText);
+            // *** [수정] *** 견고한 파서 사용
+            const rrHeaderNames = parseCsvLine(lines[1]); 
             
             for (let i = 2; i < rrHeaderIds.length; i++) {
                 if (rrHeaderIds[i]) {
@@ -215,11 +233,14 @@
 
             // S&K 데이터 및 매핑 파싱
             for (let i = 2; i < lines.length; i++) {
-                const cols = lines[i].split(',').map(c => c.trim());
+                if (!lines[i].trim()) continue; // 빈 줄 스킵
+                
+                // *** [수정] *** 견고한 파서 사용
+                const cols = parseCsvLine(lines[i]); 
                 const skLevelId = cols[0];
                 if (!skLevelId) continue;
                 
-                const skLevelName = cleanCsvText(cols[1]);
+                const skLevelName = cols[1]; // 이미 parseCsvLine에서 처리됨
                 matrix.skLevels.push({ id: skLevelId, name: skLevelName });
                 
                 matrix.mapping[skLevelId] = {};
@@ -238,27 +259,6 @@
             return matrix;
         }
 
-        // 견고한 CSV 라인 파서 (따옴표 안의 쉼표 처리)
-        function parseCsvLine(line) {
-            const regex = /(?:"([^"]*(?:""[^"]*)*)"|([^",]+))(?=,|$)/g;
-            const matches = [];
-            let match;
-            
-            while (match = regex.exec(line)) {
-                let value = match[1] || match[2]; // match[1]은 따옴표 안의 값, match[2]는 따옴표 없는 값
-                if (value === undefined || value === null) {
-                    value = "";
-                }
-                // 따옴표로 묶인 값의 경우, 이스케이프된 따옴표("")를 일반 따옴표(")로 복원
-                if (match[1] !== undefined) {
-                    value = value.replace(/""/g, '"');
-                }
-                matches.push(value.trim().replace(/\\n/g, ' '));
-            }
-            return matches;
-        }
-
-
         // indicator.xlsx - Sheet1.csv 파서 (파일 구조에 맞춤)
         function parseIndicator(text) {
             const lines = text.trim().split('\n');
@@ -270,7 +270,7 @@
             // CSV 헤더에서 BOM(Byte Order Mark) 제거
             lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
             
-            const headers = lines[0].split(',').map(h => h.trim());
+            const headers = parseCsvLine(lines[0]); // 헤더도 파서 사용
 
             const keyIdx = headers.indexOf('Concatenate');
             const jobIdx = headers.indexOf('Job Group');
@@ -319,13 +319,14 @@
             welcomeEl.classList.add('hidden');
             errorEl.classList.add('hidden'); // 에러 메시지 초기화
 
-            // *** [수정] ***
-            // Promise.all (파일 로딩)을 try...catch 블록 안으로 이동
             try {
+                // *** [수정] ***
+                // 파일 경로는 v5와 동일하게, 사용자가 변경한 파일명 사용
                 const [matrixText, indicatorText] = await Promise.all([
-                    fetchAndParseCSV('level_matrix.csv'), // 'Development Review_채용 - Level Matrix.csv'
-                    fetchAndParseCSV('indicator.csv')     // 'indicator.xlsx - Sheet1.csv'
+                    fetchAndParseCSV('level_matrix.csv'),
+                    fetchAndParseCSV('indicator.csv')
                 ]);
+                // *** [수정 끝] ***
 
                 // Level Matrix 파싱 및 드롭다운 채우기
                 db.levelMatrix = parseLevelMatrix(matrixText);
@@ -345,17 +346,20 @@
                     jobSelect.innerHTML += `<option value="${job}">${job}</option>`;
                 });
 
+                // *** [추가] ***
+                // 파싱은 성공했으나 데이터가 비어있는 경우 에러 처리
+                if (db.jobGroups.length === 0 || db.levelMatrix.skLevels.length === 0) {
+                   throw new Error("CSV 파일 파싱에 성공했으나, 데이터를 읽어오지 못했습니다. CSV 파일 내용을 확인해주세요.");
+                }
+
                 loadingEl.classList.add('hidden');
-De
                 welcomeEl.classList.remove('hidden');
 
             } catch (e) {
-                // *** [수정] ***
                 // 파일 로딩 또는 파싱 중 발생한 모든 에러를 여기서 잡음
                 console.error(e);
                 loadingEl.classList.add('hidden');
                 errorEl.classList.remove('hidden');
-                // e.message는 fetchAndParseCSV에서 던진 구체적인 오류 메시지를 표시
                 errorEl.textContent = `데이터 로딩 실패: ${e.message}`; 
             }
         }
@@ -482,7 +486,6 @@ De
                 ${generateBehavioralQuestions(ind.name).map((q, i) => `<div class="question"><strong>Q${ind.num}.${i+1}:</strong> ${q}</div>`).join('')}
             `).join('');
 
-Example
             let rrQuestionsHtml = rrIndicators.map(ind => `
                 <h4>${ind.name}</h4>
                 ${generateBehavioralQuestions(ind.name).map((q, i) => `<div class="question"><strong>Q${ind.num}.${i+1}:</strong> ${q}</div>`).join('')}
@@ -505,7 +508,7 @@ Example
             }).join('');
 
             let rrRubricHtml = rrIndicators.map(ind => {
-                const rubric = generateRubricEntry(ind.name, ind.desc);
+                const rubric = generateRubGCEntry(ind.name, ind.desc);
                 return `
                     <tr>
                         <td><strong>${ind.name}</strong></td>
@@ -571,6 +574,17 @@ Example
                     <p><strong>I (Initial):</strong> ${ratingDefinitions.I}</p>
                 </div>
             `;
+        }
+        
+        // 헬퍼 내 오타 수정
+        function generateRubricEntry(indicatorName, indicatorDesc) {
+            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
+            // H/M/I 정의를 기반으로 템플릿 생성
+            return {
+                H: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'높은 수준으로 지속 유지'</strong>하며, <strong>'조직/동료에게 긍정적인 영향'</strong>을 미친 명확한 성공 사례를 구체적으로 제시함.`,
+                M: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'대부분의 업무에서 주도적으로 발휘'</strong>한 경험을 구체적으로 제시함.`,
+                I: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 발휘한 경험이 없거나, <strong>'상사의 지시에 의해서만 수동적으로 수행'</strong>한 경험만 제시함.`
+            };
         }
 
         // 페이지 로드 시 데이터 초기화

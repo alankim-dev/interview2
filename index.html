@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>구조화된 면접 질문 생성기 v3 (Parser Fix)</title>
+    <title>NSUSLAB 구조화된 면접 질문 생성기 v5 (Error Fix)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -118,10 +118,165 @@
     </div>
 
     <script>
-// ... existing code ... -->
+        // 전역 데이터 저장소
+        let db = {
+            levelMatrix: {
+                skLevels: [], // { id: 'S&K 1', name: '[...]' }
+                rrLevels: [], // { id: 'R&R 1', name: '[...]' }
+                mapping: {}   // { 'S&K 1': { 'R&R 1': 'L3', ... } }
+            },
+            indicators: null,
+            jobGroups: []
+        };
+
+        // H/M/I 평가 등급 정의 (프롬프트 기반)
+        const ratingDefinitions = {
+            H: "높은 수준을 지속 유지하며 해당 역량을 발휘하여 조직 및 구성원에게 긍정적인 영향을 미침",
+            M: "대부분의 업무수행에서 해당 역량을 주도적으로 발휘함",
+            I: "상사의 지시에 의해서만 수동적으로 발현되거나, 주도적으로 발현되더라도 상사의 개입이 필요함"
+        };
+        
+        // Culture Fit 질문 (프롬프트 기반)
+        const cultureFitQuestions = {
+            "Work Transparently and Proactively": [
+                "업무를 수행할 때, 관련 정보를 동료나 상사에게 어떤 방식으로 얼마나 투명하게 공유하는지 구체적인 사례를 들어 설명해 주세요. (공유의 범위, 주기, 방법 등)",
+                "스스로 문제를 발견하고 주도적으로 해결책을 찾아 실행했던 경험이 있다면 말씀해 주세요. '누가 시키지 않았지만' 본인이 먼저 움직였던 이유가 무엇이었나요?"
+            ],
+            "Communicate with Fearless Truthfulness": [
+                "동료의 업무 방식이나 결과물에 대해 솔직하지만 불편할 수 있는 피드백을 전달해야 했던 경험이 있나요? 당시 왜 피드백이 필요하다고 판단했으며, 어떤 방식으로 소통했고, 그 결과는 어땠는지 말씀해 주세요.",
+                "반대로, 본인의 업무에 대해 동료나 상사로부터 불편할 수 있는 솔직한 피드백을 받았던 경험이 있나요? 당시 어떤 피드백이었고, 어떻게 받아들였으며, 이후 어떤 변화가 있었는지 말씀해 주세요."
+            ],
+            "Solve with the 1-3-1 Rule": [
+                "업무 중 명확한 문제가 발생했을 때, 상사에게 보고하는 본인만의 방식이 있나요? 문제 상황만 공유하는 편인지, 아니면 해결 방안을 함께 제시하는 편인지 구체적인 사례를 들어 설명해 주세요.",
+                "복잡한 문제에 부딪혔을 때, 한 가지 해결책만 생각하기보다 여러 대안을 탐색하고 비교/분석하여 최적의 안을 도출했던 경험이 있다면 자세히 말씀해 주세요."
+            ]
+        };
+
+        // DOM 요소
+        const jobSelect = document.getElementById('jobGroupSelect');
+        const skSelect = document.getElementById('skSelect');
+        const rrSelect = document.getElementById('rrSelect');
+        const expectedLevelDisplay = document.getElementById('expectedLevelDisplay');
+        const generateBtn = document.getElementById('generateButton');
+        const outputEl = document.getElementById('output');
+        const loadingEl = document.getElementById('loading');
+        const errorEl = document.getElementById('error');
+        const welcomeEl = document.getElementById('welcome');
+
+        // CSV 파서
+        async function fetchAndParseCSV(url) {
+            try {
+                // 사용자가 새로 올린 파일 이름을 사용
+                const response = await fetch(url);
+                if (!response.ok) {
+                    // 404 Not Found 같은 에러가 발생하면 여기서 에러를 발생시킴
+                    throw new Error(`HTTP error! status: ${response.status} for file ${url}`);
+                }
+                return await response.text();
+            } catch (e) {
+                console.error(e);
+                // *** [수정] *** // 여기서 에러를 다시 던져서 loadData의 catch 블록이 잡도록 함
+                throw new Error(`데이터 파일(${url}) 로딩에 실패했습니다. 파일 이름과 경로를 확인해주세요.`);
+            }
+        }
+        
+        // 텍스트 정제 헬퍼
+        function cleanCsvText(text) {
+            return text.trim().replace(/"/g, '').replace(/\\n/g, ' ');
+        }
+
+        // Level Matrix.csv 파서 (파일 구조에 맞춤)
+        function parseLevelMatrix(text) {
+            const lines = text.trim().split('\n');
+            const matrix = {
+                skLevels: [],
+                rrLevels: [],
+                mapping: {}
+            };
+
+            if (lines.length < 3) return matrix;
+            
+            // CSV 헤더에서 BOM(Byte Order Mark) 제거
+            lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
+
+            // R&R 헤더 (ID: R&R 1, R&R 2, ...)
+            const rrHeaderIds = lines[0].split(',').map(h => h.trim());
+            // R&R 이름 ([Ownership]..., [Collaboration]..., ...)
+            const rrHeaderNames = lines[1].split(',').map(cleanCsvText);
+            
+            for (let i = 2; i < rrHeaderIds.length; i++) {
+                if (rrHeaderIds[i]) {
+                    matrix.rrLevels.push({
+                        id: rrHeaderIds[i],
+                        name: rrHeaderNames[i] || 'N/A'
+                    });
+                }
+            }
+
+            // S&K 데이터 및 매핑 파싱
+            for (let i = 2; i < lines.length; i++) {
+                const cols = lines[i].split(',').map(c => c.trim());
+                const skLevelId = cols[0];
+                if (!skLevelId) continue;
+                
+                const skLevelName = cleanCsvText(cols[1]);
+                matrix.skLevels.push({ id: skLevelId, name: skLevelName });
+                
+                matrix.mapping[skLevelId] = {};
+
+                for (let j = 2; j < cols.length; j++) {
+                    // R&R 레벨이 2-based index (j-2)에 있는지 확인
+                    if(matrix.rrLevels[j-2]) {
+                        const rrLevel = matrix.rrLevels[j-2];
+                        const level = cols[j];
+                        if (rrLevel && level) {
+                            matrix.mapping[skLevelId][rrLevel.id] = level;
+                        }
+                    }
+                }
+            }
+            return matrix;
+        }
+
+        // 견고한 CSV 라인 파서 (따옴표 안의 쉼표 처리)
+        function parseCsvLine(line) {
+            const regex = /(?:"([^"]*(?:""[^"]*)*)"|([^",]+))(?=,|$)/g;
+            const matches = [];
+            let match;
+            
+            while (match = regex.exec(line)) {
+                let value = match[1] || match[2]; // match[1]은 따옴표 안의 값, match[2]는 따옴표 없는 값
+                if (value === undefined || value === null) {
+                    value = "";
+                }
+                // 따옴표로 묶인 값의 경우, 이스케이프된 따옴표("")를 일반 따옴표(")로 복원
+                if (match[1] !== undefined) {
+                    value = value.replace(/""/g, '"');
+                }
+                matches.push(value.trim().replace(/\\n/g, ' '));
+            }
+            return matches;
+        }
+
+
         // indicator.xlsx - Sheet1.csv 파서 (파일 구조에 맞춤)
         function parseIndicator(text) {
-// ... existing code ... -->
+            const lines = text.trim().split('\n');
+            const indicators = {};
+            const jobGroups = new Set();
+
+            if (lines.length < 2) return { indicators, jobGroups: [] };
+            
+            // CSV 헤더에서 BOM(Byte Order Mark) 제거
+            lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
+            
+            const headers = lines[0].split(',').map(h => h.trim());
+
+            const keyIdx = headers.indexOf('Concatenate');
+            const jobIdx = headers.indexOf('Job Group');
+            const gradeIdx = headers.indexOf('Grade');
+            const nameIdx = headers.indexOf('세부지표 키워드');
+            const descIdx = headers.indexOf('세부지표 설명');
             
             if ([keyIdx, jobIdx, gradeIdx, nameIdx, descIdx].includes(-1)) {
                 let missing = [
@@ -129,25 +284,293 @@
                 ].filter(h => headers.indexOf(h) === -1);
                 throw new Error(`Indicator.csv에 필수 컬럼이 없습니다: [${missing.join(', ')}] (헤더: ${headers.join('|')})`);
             }
-// ... existing code ... -->
+
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i].trim()) continue; // 빈 줄 스킵
+                
+                // 수정된 CSV 라인 파서 사용
+                const cols = parseCsvLine(lines[i]);
+                
+                // 파싱된 컬럼 수가 헤더와 맞지 않으면 스킵 (파싱 오류 방지)
+                if (cols.length < headers.length) {
+                    console.warn("Skipping malformed CSV line:", lines[i], cols);
+                    continue;
+                }
+
+                const key = cols[keyIdx];
+                const job = cols[jobIdx];
+                if (!key || !job) continue;
+
+                jobGroups.add(job);
+                indicators[key] = {
+                    name: cols[nameIdx],
+                    desc: cols[descIdx], // 이미 parseCsvLine에서 \n 처리됨
+                    job: job,
+                    grade: cols[gradeIdx]
+                };
+            }
+            
+            return { indicators, jobGroups: [...jobGroups].sort() };
         }
-        // *** [FIX END] ***
 
         // 데이터 로드 및 UI 초기화
         async function loadData() {
             loadingEl.classList.remove('hidden');
             welcomeEl.classList.add('hidden');
+            errorEl.classList.add('hidden'); // 에러 메시지 초기화
 
-            // *** [수정된 부분] ***
-            // 파일 경로를 간단한 이름으로 변경
-            const [matrixText, indicatorText] = await Promise.all([
-                fetchAndParseCSV('level_matrix.csv'), // 'Development Review_채용 - Level Matrix.csv'
-                fetchAndParseCSV('indicator.csv')     // 'indicator.xlsx - Sheet1.csv'
-            ]);
-            // *** [수정 끝] ***
+            // *** [수정] ***
+            // Promise.all (파일 로딩)을 try...catch 블록 안으로 이동
+            try {
+                const [matrixText, indicatorText] = await Promise.all([
+                    fetchAndParseCSV('level_matrix.csv'), // 'Development Review_채용 - Level Matrix.csv'
+                    fetchAndParseCSV('indicator.csv')     // 'indicator.xlsx - Sheet1.csv'
+                ]);
 
-            if (!matrixText || !indicatorText) {
-// ... existing code ... -->
+                // Level Matrix 파싱 및 드롭다운 채우기
+                db.levelMatrix = parseLevelMatrix(matrixText);
+                db.levelMatrix.skLevels.forEach(sk => {
+                    skSelect.innerHTML += `<option value="${sk.id}">${sk.id} (${sk.name})</option>`;
+                });
+                db.levelMatrix.rrLevels.forEach(rr => {
+                    rrSelect.innerHTML += `<option value="${rr.id}">${rr.id} (${rr.name})</option>`;
+                });
+
+                // Indicator 파싱 및 드롭다운 채우기
+                const { indicators, jobGroups } = parseIndicator(indicatorText);
+                db.indicators = indicators;
+                db.jobGroups = jobGroups;
+
+                db.jobGroups.forEach(job => {
+                    jobSelect.innerHTML += `<option value="${job}">${job}</option>`;
+                });
+
+                loadingEl.classList.add('hidden');
+De
+                welcomeEl.classList.remove('hidden');
+
+            } catch (e) {
+                // *** [수정] ***
+                // 파일 로딩 또는 파싱 중 발생한 모든 에러를 여기서 잡음
+                console.error(e);
+                loadingEl.classList.add('hidden');
+                errorEl.classList.remove('hidden');
+                // e.message는 fetchAndParseCSV에서 던진 구체적인 오류 메시지를 표시
+                errorEl.textContent = `데이터 로딩 실패: ${e.message}`; 
+            }
+        }
+        
+        // 예상 직급 업데이트
+        function updateExpectedLevel() {
+            const sk = skSelect.value;
+            const rr = rrSelect.value;
+            
+            if (sk && rr && db.levelMatrix.mapping[sk] && db.levelMatrix.mapping[sk][rr]) {
+                expectedLevelDisplay.textContent = db.levelMatrix.mapping[sk][rr];
+            } else {
+                expectedLevelDisplay.textContent = "-";
+            }
+        }
+
+        // S&K, R&R 선택 시 예상 직급 자동 업데이트
+        skSelect.addEventListener('change', updateExpectedLevel);
+        rrSelect.addEventListener('change', updateExpectedLevel);
+        
+        // 가이드 생성 버튼 클릭 이벤트
+        generateButton.addEventListener('click', generateGuide);
+
+        // 메인 로직: 면접 가이드 생성
+        function generateGuide() {
+            const jobGroup = jobSelect.value;
+            const skLevel = skSelect.value;
+            const rrLevel = rrSelect.value;
+            const expectedLevel = expectedLevelDisplay.textContent;
+
+            if (!jobGroup || !skLevel || !rrLevel) {
+                errorEl.textContent = "직무, S&K 레벨, R&R 레벨을 모두 선택해야 합니다.";
+                errorEl.classList.remove('hidden');
+                outputEl.innerHTML = "";
+                welcomeEl.classList.add('hidden');
+                return;
+            }
+            
+            loadingEl.classList.remove('hidden');
+            errorEl.classList.add('hidden');
+            welcomeEl.classList.add('hidden');
+            outputEl.innerHTML = "";
+
+            // 비동기처럼 보이게 잠시 대기 (UX)
+            setTimeout(() => {
+                try {
+                    const skLevelName = db.levelMatrix.skLevels.find(s => s.id === skLevel)?.name || 'N/A';
+                    const rrLevelName = db.levelMatrix.rrLevels.find(r => r.id === rrLevel)?.name || 'N/A';
+
+                    // 5가지 세부지표 및 설명 추출
+                    const skIndicators = getIndicators(jobGroup, skLevel);
+                    const rrIndicators = getIndicators(jobGroup, rrLevel);
+
+                    if (skIndicators.length < 1) {
+                        throw new Error(`Indicator 파일에서 [${jobGroup}] 직무의 [${skLevel}] 세부지표를 찾을 수 없습니다.`);
+                    }
+                    if (rrIndicators.length < 1) {
+                        throw new Error(`Indicator 파일에서 [${jobGroup}] 직무의 [${rrLevel}] 세부지표를 찾을 수 없습니다.`);
+                    }
+
+                    // 질문 생성 및 HTML 빌드
+                    let html = buildHtmlOutput(jobGroup, expectedLevel, skLevel, skLevelName, skIndicators, rrLevel, rrLevelName, rrIndicators);
+                    
+                    // 출력
+                    outputEl.innerHTML = html;
+                    loadingEl.classList.add('hidden');
+
+                } catch (e) {
+                    console.error(e);
+                    errorEl.textContent = `가이드 생성 중 오류 발생: ${e.message}`;
+                    errorEl.classList.remove('hidden');
+                    loadingEl.classList.add('hidden');
+                }
+
+            }, 500); // 0.5초 딜레이
+        }
+
+        // 헬퍼: Indicator 5개 (또는 있는 만큼) 가져오기
+        function getIndicators(jobGroup, grade) {
+            const indicators = [];
+            // indicator.xlsx 파일의 Concatenate 키 형식을 따름 (예: Software EngineeringS&K3세부지표1)
+            // '세부지표 키워드' 컬럼에서 번호를 파싱 (예: "1. 프로세스 고도화")
+            for (const key in db.indicators) {
+                const data = db.indicators[key];
+                if (data.job === jobGroup && data.grade === grade) {
+                    const match = data.name.match(/^(\d+)\./); // "1.", "2." ...
+                    const num = match ? parseInt(match[1], 10) : 99; // 번호가 없으면 뒤로
+                    indicators.push({
+                        num: num,
+                        name: data.name,
+                        desc: data.desc
+                    });
+                }
+            }
+            return indicators.sort((a, b) => a.num - b.num); // 번호순으로 정렬
+        }
+
+        // 헬퍼: 행동 기반 질문 생성 (템플릿)
+        function generateBehavioralQuestions(indicatorName) {
+            // "1. " 같은 앞번호 제거
+            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
+            return [
+                `<strong>[${cleanName}]</strong> 역량을 발휘했던 가장 대표적인 경험에 대해 말씀해 주시겠어요? (당시 상황(Situation), 본인의 과제(Task), 구체적인 행동(Action), 그리고 그 결과(Result)를 포함하여 STAR 방식으로 설명해 주세요.)`,
+                `과거에 <strong>[${cleanName}]</strong> 역량이 특히 중요하다고 판단했던 프로젝트나 업무가 있었다면 자세히 설명해 주시겠어요? (왜 그렇게 생각했는지, 본인은 어떤 기여를 했는지, 결과는 어땠는지 말씀해 주세요.)`
+            ];
+        }
+
+        // 헬퍼: 평가 루브릭 기준 생성 (템플릿)
+        function generateRubricEntry(indicatorName, indicatorDesc) {
+            const cleanName = indicatorName.replace(/^\d+\.\s*/, '');
+            // H/M/I 정의를 기반으로 템플릿 생성
+            return {
+                H: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'높은 수준으로 지속 유지'</strong>하며, <strong>'조직/동료에게 긍정적인 영향'</strong>을 미친 명확한 성공 사례를 구체적으로 제시함.`,
+                M: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 <strong>'대부분의 업무에서 주도적으로 발휘'</strong>한 경험을 구체적으로 제시함.`,
+                I: `<strong>'${cleanName}'</strong> 역량(${indicatorDesc})을 발휘한 경험이 없거나, <strong>'상사의 지시에 의해서만 수동적으로 수행'</strong>한 경험만 제시함.`
+            };
+        }
+
+        // 헬퍼: 전체 HTML 출력물 생성
+        function buildHtmlOutput(jobGroup, expectedLevel, skLevel, skLevelName, skIndicators, rrLevel, rrLevelName, rrIndicators) {
+            
+            let skQuestionsHtml = skIndicators.map(ind => `
+                <h4>${ind.name}</h4>
+                ${generateBehavioralQuestions(ind.name).map((q, i) => `<div class="question"><strong>Q${ind.num}.${i+1}:</strong> ${q}</div>`).join('')}
+            `).join('');
+
+Example
+            let rrQuestionsHtml = rrIndicators.map(ind => `
+                <h4>${ind.name}</h4>
+                ${generateBehavioralQuestions(ind.name).map((q, i) => `<div class="question"><strong>Q${ind.num}.${i+1}:</strong> ${q}</div>`).join('')}
+            `).join('');
+            
+            let cultureHtml = Object.keys(cultureFitQuestions).map((principle, idx) => `
+                <h4>${idx + 1}. ${principle}</h4>
+                ${cultureFitQuestions[principle].map((q, i) => `<div class="question"><strong>Q${idx+1}.${i+1}:</strong> ${q}</div>`).join('')}
+            `).join('');
+
+            let skRubricHtml = skIndicators.map(ind => {
+                const rubric = generateRubricEntry(ind.name, ind.desc);
+                return `
+                    <tr>
+                        <td><strong>${ind.name}</strong></td>
+                        <td><span class="rubric-grade">H (High)</span><span class="rubric-desc">${rubric.H}</span></td>
+                        <td><span class="rubric-grade">M (Moderate)</span><span class="rubric-desc">${rubric.M}</span></td>
+                        <td><span class="rubric-grade">I (Initial)</span><span class="rubric-desc">${rubric.I}</span></td>
+                    </tr>`;
+            }).join('');
+
+            let rrRubricHtml = rrIndicators.map(ind => {
+                const rubric = generateRubricEntry(ind.name, ind.desc);
+                return `
+                    <tr>
+                        <td><strong>${ind.name}</strong></td>
+                        <td><span class="rubric-grade">H (High)</span><span class="rubric-desc">${rubric.H}</span></td>
+                        <td><span class="rubric-grade">M (Moderate)</span><span class="rubric-desc">${rubric.M}</span></td>
+                        <td><span class="rubric-grade">I (Initial)</span><span class="rubric-desc">${rubric.I}</span></td>
+                    </tr>`;
+            }).join('');
+
+            return `
+                <div class="p-4 border-b border-gray-300">
+                    <h1 class="text-3xl font-bold text-indigo-700">${jobGroup} / (예상 ${expectedLevel})</h1>
+                    <p class="text-xl text-gray-600">면접 질문 및 평가 가이드</p>
+                </div>
+
+                <!-- A. S&K -->
+                <h2>A. S&K (Skill & Knowledge) 역량 질문</h2>
+                <h3>Target: ${skLevel} (${skLevelName})</h3>
+                ${skQuestionsHtml}
+
+                <!-- B. R&R -->
+                <h2>B. R&R (Role & Responsibilities) 역량 질문</h2>
+                <h3>Target: ${rrLevel} (${rrLevelName})</h3>
+                ${rrQuestionsHtml}
+
+                <!-- C. Culture Fit -->
+                <h2>C. Culture Fit 질문 (Ways of Working)</h2>
+                ${cultureHtml}
+
+                <!-- D. Rubric -->
+                <h2>D. 역량 평가 루브릭 (Evaluation Rubric)</h2>
+                
+                <h3 class="!mt-4 !mb-2">평가 항목 (S&K)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="w-1/4">S&K 세부지표</th>
+                            <th>H (High)</th>
+                            <th>M (Moderate)</th>
+                            <th>I (Initial)</th>
+                        </tr>
+                    </thead>
+                    <tbody>${skRubricHtml}</tbody>
+                </table>
+
+                <h3 class="!mt-8 !mb-2">평가 항목 (R&R)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="w-1/4">R&R 세부지표</th>
+                            <th>H (High)</th>
+                            <th>M (Moderate)</th>
+                            <th>I (Initial)</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rrRubricHtml}</tbody>
+                </table>
+                
+                <div class="definitions">
+                    <h4 class="!text-lg !font-semibold !text-gray-800 !mt-0 !mb-3">※ 평가 등급 정의</h4>
+                    <p><strong>H (High):</strong> ${ratingDefinitions.H}</p>
+                    <p><strong>M (Moderate):</strong> ${ratingDefinitions.M}</p>
+                    <p><strong>I (Initial):</strong> ${ratingDefinitions.I}</p>
+                </div>
+            `;
         }
 
         // 페이지 로드 시 데이터 초기화

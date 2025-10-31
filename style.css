@@ -1,0 +1,234 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+
+:root {
+    --primary-color: #007bff;
+    --secondary-color: #6c757d;
+    --bg-color: #f8f9fa;
+    --card-bg: #ffffff;
+    --border-color: #dee2e6;
+    --text-color: #212529;
+    --good-bg: #e6f7ec;
+    --good-text: #0d6a2e;
+    --bad-bg: #fdeaea;
+    --bad-text: #b31d1d;
+}
+
+body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+header h1 {
+    color: var(--text-color);
+    margin-bottom: 10px;
+}
+
+.controls {
+    background-color: var(--card-bg);
+    padding: 25px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: flex-end;
+    margin-bottom: 30px;
+}
+
+.control-group {
+    flex: 1;
+    min-width: 200px;
+}
+
+.control-group label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--text-color);
+}
+
+select, button {
+    width: 100%;
+    padding: 12px 15px;
+    font-size: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-sizing: border-box; /* Ensures padding doesn't affect width */
+    font-family: 'Noto Sans KR', sans-serif;
+}
+
+button {
+    background-color: var(--primary-color);
+    color: white;
+    font-weight: 700;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    flex-basis: 100%; /* Full width on small screens */
+}
+
+@media (min-width: 768px) {
+    button {
+        flex-basis: auto; /* Auto width on larger screens */
+        min-width: 180px;
+    }
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+#results .placeholder {
+    text-align: center;
+    color: var(--secondary-color);
+    font-size: 18px;
+    background-color: var(--card-bg);
+    padding: 40px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.result-section {
+    background-color: var(--card-bg);
+    margin-bottom: 25px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    overflow: hidden; /* Ensures border-radius applies to children */
+}
+
+.section-header {
+    background-color: #f1f3f5;
+    padding: 15px 25px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.section-header h2 {
+    margin: 0;
+    color: var(--primary-color);
+}
+
+.section-header.culture-header h2 {
+    color: #28a745; /* Green for Culture */
+}
+
+.section-header p {
+    margin: 5px 0 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--secondary-color);
+}
+
+.card-content {
+    padding: 25px;
+    display: grid;
+    gap: 20px;
+}
+
+.indicator-card, .culture-card {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.indicator-card h3 {
+    margin: 0 0 10px 0;
+    color: var(--text-color);
+    font-size: 18px;
+}
+
+.indicator-card p.description {
+    margin: 0 0 15px 0;
+    font-size: 15px;
+    color: var(--secondary-color);
+    border-left: 4px solid var(--border-color);
+    padding-left: 10px;
+}
+
+.question-block {
+    margin-top: 15px;
+}
+
+.question-block strong {
+    font-size: 16px;
+    color: var(--text-color);
+}
+
+.question-block ul {
+    list-style-type: none;
+    padding-left: 15px;
+    margin-top: 10px;
+}
+
+.question-block li {
+    position: relative;
+    padding-left: 25px;
+    margin-bottom: 10px;
+    font-size: 15px;
+}
+
+.question-block li::before {
+    content: 'Q.';
+    position: absolute;
+    left: 0;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+.criteria {
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.criteria-box {
+    flex: 1;
+    min-width: 250px;
+    padding: 15px;
+    border-radius: 8px;
+}
+
+.criteria-box h4 {
+    margin: 0 0 10px 0;
+    font-size: 16px;
+}
+
+.criteria-box p {
+    margin: 0;
+    font-size: 14px;
+}
+
+.criteria-good {
+    background-color: var(--good-bg);
+    color: var(--good-text);
+    border-left: 4px solid var(--good-text);
+}
+
+.criteria-good h4 {
+    color: var(--good-text);
+}
+
+.criteria-bad {
+    background-color: var(--bad-bg);
+    color: var(--bad-text);
+    border-left: 4px solid var(--bad-text);
+}
+
+.criteria-bad h4 {
+    color: var(--bad-text);
+}

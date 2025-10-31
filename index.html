@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>구조화된 면접 질문 생성기 v9 (Guard Fix)</title>
+    <title>구조화된 면접 질문 생성기 v11 (Robust Parser)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -163,7 +163,7 @@
         const errorEl = document.getElementById('error');
         const welcomeEl = document.getElementById('welcome');
 
-        // CSV 파서
+        // CSV 파일 fetch
         async function fetchAndParseCSV(url) {
             try {
                 // 사용자가 새로 올린 파일 이름을 사용
@@ -180,25 +180,52 @@
             }
         }
         
-        // 견고한 CSV 라인 파서 (따옴표 안의 쉼표, 줄바꿈 처리)
-        function parseCsvLine(line) {
-            const regex = /(?:"([^"]*(?:""[^"]*)*)"|([^",]+))(?=,|$)/g;
-            const matches = [];
-            let match;
-            
-            while (match = regex.exec(line)) {
-                let value = match[1] || match[2]; // match[1]은 따옴표 안의 값, match[2]는 따옴표 없는 값
-                if (value === undefined || value === null) {
-                    value = "";
+        // *** [수정 v11] ***
+        // 따옴표, 빈 필드(,,), 줄바꿈을 처리하는 더 견고한 CSV 파서
+        function robustParseCsvLine(line) {
+            const chars = line.split('');
+            const values = [];
+            let inQuote = false;
+            let value = "";
+            let c;
+
+            for (let i = 0; i < chars.length; i++) {
+                c = chars[i];
+
+                if (inQuote) {
+                    // --- 따옴표 안 ---
+                    if (c === '"') {
+                        if (chars[i+1] === '"') {
+                            // 이스케이프된 따옴표 ""
+                            value += '"';
+                            i++; // 다음 따옴표 스킵
+                        } else {
+                            // 따옴표 끝
+                            inQuote = false;
+                        }
+                    } else {
+                        value += c; // 값에 추가
+                    }
+                } else {
+                    // --- 따옴표 밖 ---
+                    if (c === '"') {
+                        inQuote = true;
+                        // 따옴표가 값 중간에 시작되는 비정상 CSV도 일단 처리
+                    } else if (c === ',') {
+                        // 값의 끝 (쉼표)
+                        // \n \r 같은 줄바꿈 문자를 공백으로 치환
+                        values.push(value.trim().replace(/(\r\n|\n|\r)/gm, " "));
+                        value = ""; // 다음 값을 위해 초기화
+                    } else {
+                        value += c; // 값에 추가
+                    }
                 }
-                // 따옴표로 묶인 값의 경우, 이스케이프된 따옴표("")를 일반 따옴표(")로 복원
-                // 줄바꿈(\n 또는 \r\n)을 공백으로 치환
-                if (match[1] !== undefined) {
-                    value = value.replace(/""/g, '"').replace(/(\r\n|\n|\r)/gm, " ");
-                }
-                matches.push(value.trim());
             }
-            return matches;
+            
+            // 마지막 값 추가
+            values.push(value.trim().replace(/(\r\n|\n|\r)/gm, " "));
+            
+            return values;
         }
 
         // Level Matrix.csv 파서 (파일 구조에 맞춤)
@@ -215,14 +242,15 @@
             // CSV 헤더에서 BOM(Byte Order Mark) 제거
             lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
 
-            // R&R 헤더 (ID: R&R 1, R&R 2, ...)
-            const rrHeaderIds = parseCsvLine(lines[0]); 
-            // R&R 이름 ([Ownership]..., [Collaboration]..., ...)
-            const rrHeaderNames = parseCsvLine(lines[1]); 
+            // *** [수정 v11] ***: 견고한 파서 사용
+            const rrHeaderIds = robustParseCsvLine(lines[0]); 
+            const rrHeaderNames = robustParseCsvLine(lines[1]); 
             
-            //  중복 R&R ID를 걸러내기 위한 Set
+            // 중복 R&R ID를 걸러내기 위한 Set
             const rrIdSet = new Set();
             
+            // *** [수정 v11] ***:
+            // 이제 rrHeaderIds[2] = "R&R 1" 이고, rrHeaderNames[2] = "[Ownership]" 임
             for (let i = 2; i < rrHeaderIds.length; i++) {
                 const rrId = rrHeaderIds[i];
                 // ID가 비어있지 않고, Set에 없는 경우에만 추가
@@ -239,7 +267,8 @@
             for (let i = 2; i < lines.length; i++) {
                 if (!lines[i].trim()) continue; // 빈 줄 스킵
                 
-                const cols = parseCsvLine(lines[i]); 
+                // *** [수정 v11] ***: 견고한 파서 사용
+                const cols = robustParseCsvLine(lines[i]); 
                 const skLevelId = cols[0];
                 
                 // "S&K " (공백 포함)으로 시작하는 행만 S&K 레벨로 인정
@@ -247,7 +276,7 @@
                     continue; 
                 }
                 
-                const skLevelName = cols[1]; // 이미 parseCsvLine에서 처리됨
+                const skLevelName = cols[1];
                 matrix.skLevels.push({ id: skLevelId, name: skLevelName });
                 
                 matrix.mapping[skLevelId] = {};
@@ -277,7 +306,8 @@
             // CSV 헤더에서 BOM(Byte Order Mark) 제거
             lines[0] = lines[0].trim().replace(/^\uFEFF/, '');
             
-            const headers = parseCsvLine(lines[0]); // 헤더도 파서 사용
+            // *** [수정 v11] ***: 견고한 파서 사용
+            const headers = robustParseCsvLine(lines[0]);
 
             const keyIdx = headers.indexOf('Concatenate');
             const jobIdx = headers.indexOf('Job Group');
@@ -295,12 +325,12 @@
             for (let i = 1; i < lines.length; i++) {
                 if (!lines[i].trim()) continue; // 빈 줄 스킵
                 
-                // 수정된 CSV 라인 파서 사용
-                const cols = parseCsvLine(lines[i]);
+                // *** [수정 v11] ***: 견고한 파서 사용
+                const cols = robustParseCsvLine(lines[i]);
                 
-                // 파싱된 컬럼 수가 헤더와 맞지 않으면 스킵 (파싱 오류 방지)
+                // 파싱된 컬럼 수가 헤더보다 적으면 스킵 (오류 방지)
                 if (cols.length < headers.length) {
-                    console.warn("Skipping malformed CSV line:", lines[i], cols);
+                    console.warn("Skipping malformed CSV line (col count mismatch):", lines[i], cols);
                     continue;
                 }
 
@@ -310,8 +340,8 @@
 
                 jobGroups.add(job);
                 indicators[key] = {
-                    name: cols[nameIdx],
-                    desc: cols[descIdx], // 이미 parseCsvLine에서 \n 처리됨
+                    name: cols[nameIdx], // "5. ..."
+                    desc: cols[descIdx], // "" (빈 문자열) - v11부터 undefined가 아님
                     job: job,
                     grade: cols[gradeIdx]
                 };
@@ -423,9 +453,7 @@
                     // 5가지 세부지표 및 설명 추출
                     const skIndicators = getIndicators(jobGroup, skLevel);
                     const rrIndicators = getIndicators(jobGroup, rrLevel);
-
-                    // *** [수정 v9] ***:
-                    // 이제 skIndicators.length가 0이면, "데이터 없음" 오류를 정상적으로 발생시킴
+                    
                     if (skIndicators.length < 1) {
                         throw new Error(`Indicator 파일에서 [${jobGroup}] 직무의 [${skLevel}] 세부지표를 찾을 수 없습니다.`);
                     }
@@ -457,8 +485,10 @@
                 const data = db.indicators[key];
                 if (data.job === jobGroup && data.grade === grade) {
                     
-                    // *** [수정 v9] ***
-                    // name과 desc가 유효한 문자열일 때만 추가 (undefined 방지)
+                    // *** [수정 v11] ***
+                    // v11 파서 덕분에 data.name과 data.desc는 항상 'string' (빈 문자열 "" 포함)임
+                    // 따라서 'typeof' 체크는 여전히 유효하며, 
+                    // 'undefined'가 아닌 '""' (빈 문자열)을 가진 데이터를 올바르게 처리함.
                     if (typeof data.name === 'string' && typeof data.desc === 'string') {
                         const match = data.name.match(/^(\d+)\./); // "1.", "2." ...
                         const num = match ? parseInt(match[1], 10) : 99; // 번호가 없으면 뒤로
@@ -476,7 +506,7 @@
         // 헬퍼: 행동 기반 질문 생성 (템플릿)
         function generateBehavioralQuestions(indicatorName) {
             // "1. " 같은 앞번호 제거
-            // *** [수정 v9] ***: (indicatorName || '')으로 undefined 방어
+            // (v10/v11) (indicatorName || '')으로 방어
             const cleanName = (indicatorName || '').replace(/^\d+\.\s*/, '');
             return [
                 `<strong>[${cleanName}]</strong> 역량을 발휘했던 가장 대표적인 경험에 대해 말씀해 주시겠어요? (당시 상황(Situation), 본인의 과제(Task), 구체적인 행동(Action), 그리고 그 결과(Result)를 포함하여 STAR 방식으로 설명해 주세요.)`,
@@ -486,8 +516,10 @@
 
         // 헬퍼: 평가 루브릭 기준 생성 (템플릿)
         function generateRubricEntry(indicatorName, indicatorDesc) {
-            // *** [수정 v9] ***: (indicatorName || '')으로 undefined 방어
+            // (v10/v11) (indicatorName || '')으로 방어
             const cleanName = (indicatorName || '').replace(/^\d+\.\s*/, '');
+            // *** [수정 v11] ***
+            // indicatorDesc가 "" (빈 문자열)일 수 있으므로, || (or) 연산자로 처리
             const cleanDesc = indicatorDesc || '(설명 없음)';
             // H/M/I 정의를 기반으로 템플릿 생성
             return {
